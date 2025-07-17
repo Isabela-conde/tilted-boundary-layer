@@ -1,8 +1,7 @@
 # This example simulates a two-dimensional oceanic bottom boundary layer
-# in a domain that's tilted with respect to gravity. We simulate the perturbation
-# away from a constant along-slope (y-direction) velocity constant density stratification.
-# This perturbation develops into a turbulent bottom boundary layer due to momentum
-# loss at the bottom boundary modeled with a quadratic drag law.
+# in a domain that's tilted with respect to gravity. 
+# bottom boundary conditions are no-slip, no flux and there is no initial noise added
+# constant along-slope (y-direction) velocity, and constant density stratification.
 #
 # This example illustrates
 #
@@ -25,43 +24,17 @@
 using Oceananigans
 using Oceananigans.Units
 
-# Lx = 100meters
-# Lz = 50meters
-# Nx = 128
-# Nz = 128
-
-# Creates a grid with near-constant spacing `refinement * Lz / Nz`
-# near the bottom:
-# refinement = 1.8 # controls spacing near surface (higher means finer spaced)
-# stretching = 10  # controls rate of stretching at bottom
-
-
-
-# ## "Warped" height coordinate
-# h(k) = (Nz + 1 - k) / Nz
-
-# ## Linear near-surface generator
-# ζ(k) = 1 + (h(k) - 1) / refinement
-
-# ## Bottom-intensified stretching function
-# Σ(k) = (1 - exp(-stretching * h(k))) / (1 - exp(-stretching))
-
-# ## Generating function
-# z_faces(k) = - Lz * (ζ(k) * Σ(k) - 1)
-
-
-# grid = RectilinearGrid(topology = (Periodic, Flat, Bounded),
-#                        size = (Nx, Nz),
-#                        x = (0, Lx),
-#                        z = z_faces)# Let's make sure the grid spacing is both finer and near-uniform at the bottom,
+##################
+# set up grid
+##################
 
 Lz        = 2000meters            # total depth        (m)
-Nz        = 300                   # number of cells
+Nz        = 150                   # number of cells
 dz_bottom = 0.5meters             # uniform cell size  (m)
-n_const   = 150                   # number of uniform cells
+n_const   = 100                   # number of uniform cells
 
- 
 
+# add yuchen's comments back
 function compute_stretched_faces(Lz, Nz, dz_bottom, n_const)
     n_str = Nz - n_const
     z_str = Lz - dz_bottom * n_const
@@ -87,30 +60,38 @@ function compute_stretched_faces(Lz, Nz, dz_bottom, n_const)
     dz = vcat(fill(dz_bottom, n_const), dz_stretch)
     return [0 ; cumsum(dz)]
 end
+
 z_faces = compute_stretched_faces(Lz, Nz, dz_bottom, n_const)
-Lx, Nx = 300meters, 64
-grid = RectilinearGrid(topology = (Periodic, Flat, Bounded),
+Lx, Nx = 200meters, 32 
+grid = RectilinearGrid( topology = (Periodic, Flat, Bounded),
                        size      = (Nx, Nz),
                        x         = (0, Lx),
                        z         = z_faces)
 
+#GPU(),
 
-using CairoMakie
+###############################
+# plot size of z-grid cells to check resolution
+###############################
+# comment out when running model
+# using CairoMakie
 
-dz = vec(collect(zspacings(grid, Center())))
-z = collect(znodes(grid, Center()))  # This should already be 1D
+# dz = vec(collect(zspacings(grid, Center())))
+# z = collect(znodes(grid, Center()))  # This should already be 1D
 
-scatterlines(dz, z;
-             axis = (xlabel = "Vertical spacing (m)",
-                     ylabel = "Depth (m)"))
+# scatterlines(dz, z;
+#              axis = (xlabel = "Vertical spacing (m)",
+#                      ylabel = "Depth (m)"))
 
-current_figure() #hide
+# current_figure() #hide
 
-# ## Tilting the domain
-#
+###############################
+# Tilting the domain and boundary condtions
+###############################
+
 # We use a domain that's tilted with respect to gravity by
 
-rad =  2.5e-3
+rad =  5e-3
 θ = rad*180/pi # degrees
 
 # so that ``x`` is the along-slope direction, ``z`` is the across-slope direction that
@@ -122,7 +103,8 @@ ẑ = (sind(θ), 0, cosd(θ))
 # for `BuoyancyForce` as well as the `rotation_axis` for Coriolis forces,
 
 buoyancy = BuoyancyForce(BuoyancyTracer(), gravity_unit_vector = .-ẑ)
-coriolis = ConstantCartesianCoriolis(f = 1e-4, rotation_axis = ẑ)
+coriolis = ConstantCartesianCoriolis(f = 5.5e-5, rotation_axis = ẑ)
+# PC2023 used a coriolis parameter of 5.5*10^-5 - redo that simulation with this one?
 
 # where above we used a constant Coriolis parameter ``f = 10^{-4} \, \rm{s}^{-1}``.
 # The tilting also affects the kind of density stratified flows we can model.
@@ -153,34 +135,11 @@ B∞_field = BackgroundField(constant_stratification, parameters=(; ẑ, N² = N
 negative_background_diffusive_flux = GradientBoundaryCondition(∂z_b_bottom)
 b_bcs = FieldBoundaryConditions(bottom = negative_background_diffusive_flux)
 
-# ## Bottom drag and along-slope interior velocity
-#
-# We impose bottom drag that follows Monin--Obukhov theory:
-
-V∞ = 0.1 # m s⁻¹
-z₀ = 0.1 # m (roughness length)
-κ = 0.4  # von Karman constant
-
-# z₁ = first(znodes(grid, Center())) # Closest grid center to the bottom
-# cᴰ = (κ / log(z₁ / z₀))^2 # Drag coefficient
-
-# @inline drag_u(x, t, u, v, p) = - p.cᴰ * √(u^2 + (v + p.V∞)^2) * u
-# @inline drag_v(x, t, u, v, p) = - p.cᴰ * √(u^2 + (v + p.V∞)^2) * (v + p.V∞)
-
-# drag_bc_u = FluxBoundaryCondition(drag_u, field_dependencies=(:u, :v), parameters=(; cᴰ, V∞))
-# drag_bc_v = FluxBoundaryCondition(drag_v, field_dependencies=(:u, :v), parameters=(; cᴰ, V∞))
 
 
-no_slip_bc = ValueBoundaryCondition(0.0)
-no_slip_field_bcs = FieldBoundaryConditions(no_slip_bc);
-u_bcs = no_slip_field_bcs #FieldBoundaryConditions(bottom = drag_bc_u)
-v_bcs = no_slip_field_bcs #FieldBoundaryConditions(bottom = drag_bc_v)
 
-# Note that, similar to the buoyancy boundary conditions, we had to
-# include the background flow in the drag calculation.
-#
 # Let us also create `BackgroundField` for the along-slope interior velocity:
-
+V∞ = 0.1 # m s⁻¹ # imposed constant along slope velocity
 V∞_field = BackgroundField(V∞)
 
 # ## Create the `NonhydrostaticModel`
@@ -189,20 +148,30 @@ V∞_field = BackgroundField(V∞)
 # fifth-order `UpwindBiased` advection scheme and a constant viscosity and diffusivity.
 # Here we use a smallish value of ``10^{-4} \, \rm{m}^2\, \rm{s}^{-1}``.
 
+
 ν = 1e-4
 κ = 1e-4
-closure = ScalarDiffusivity(; ν, κ)
+
+closure = ScalarDiffusivity(; ν, κ) # check if this is what we want and what it actually means
+
+# no slip bottom boundary conditions
+no_slip_bc = ValueBoundaryCondition(0.0)
+no_slip_field_bcs = FieldBoundaryConditions(no_slip_bc);
+u_bcs = no_slip_field_bcs 
+v_bcs = no_slip_field_bcs
+
+###############################
+# Model setup and run
+###############################
 
 model = NonhydrostaticModel(; grid, buoyancy, coriolis, closure,
-                            advection = UpwindBiased(order=5),
+                            advection = UpwindBiased(order=5), # don't know what this means 'UpwindBiased'
                             tracers = :b,
-                            boundary_conditions = (u=u_bcs, v=v_bcs, b=b_bcs),
-                            background_fields = (; b=B∞_field, v=V∞_field))
+                            boundary_conditions = (u=u_bcs, v=v_bcs, b=b_bcs), # add no slip bc's
+                            background_fields = (; b=B∞_field, v=V∞_field)) # add constant velocisty and background stratification
 
-# Let's introduce a bit of random noise at the bottom of the domain to speed up the onset of
-# turbulence:
 
-noise(x, z) = 0* randn() * exp(-(10z)^2 / grid.Lz^2)
+noise(x, z) = 0* randn() * exp(-(10z)^2 / grid.Lz^2) # multiplying by zero for no noise
 set!(model, u=noise, w=noise)
 
 # ## Create and run a simulation
@@ -211,11 +180,13 @@ set!(model, u=noise, w=noise)
 # conservatively, based on the smallest grid size of our domain and either an advective
 # or diffusive time scaling, depending on which is shorter.
 
-
-Δt₀ = 0.25 * minimum([minimum_zspacing(grid) / V∞, minimum_zspacing(grid)^2/κ])
-simulation = Simulation(model, Δt = Δt₀, stop_time = 100days)
+# had issues with delta t size, currently at 1.25 seconds, at 2.5 seconds after a day there was nan and it stopped :\
+Δt₀ = 0.25 * minimum([minimum_zspacing(grid) / V∞, minimum_zspacing(grid)^2/κ]) 
+# run simulation which stops after 'stop_time'
+simulation = Simulation(model, Δt = Δt₀, stop_time = 30days) 
 
 # We use a `TimeStepWizard` to adapt our time-step,
+# wizard fucks things up at the moment
 
 # wizard = TimeStepWizard(max_change=1.1, cfl=0.7)
 # simulation.callbacks[:wizard] = Callback(wizard, IterationInterval(4))
@@ -223,11 +194,11 @@ simulation = Simulation(model, Δt = Δt₀, stop_time = 100days)
 # diagnostics 
 # simulation.diagnostics[:max_w] = Maximum(abs, model.velocities.w)
 # simulation.diagnostics[:max_v] = Maximum(abs, model.velocities.v)
-# simulation.diagnostics[:KE] = Average((u, v, w) -> 0.5 * (u^2 + v^2 + w^2),
+# simulation.diagnostics[:KE] = Average((u, v ) -> 0.5 * (u^2 + v^2),
 #                                        model.velocities.u, model.velocities.v, model.velocities.w)
 
-# and also we add another callback to print a progress message,
 
+# and also we add another callback to print a progress message,
 using Printf
 
 start_time = time_ns() # so we can print the total elapsed wall time
@@ -240,15 +211,17 @@ progress_message(sim) =
 
 simulation.callbacks[:progress] = Callback(progress_message, IterationInterval(200))
 
-# ## Add outputs to the simulation
-#
+###############################
+# Save model outputs
+###############################
+
 # We add outputs to our model using the `NetCDFWriter`, which needs `NCDatasets` to be loaded:
 
 u, v, w = model.velocities
 b = model.tracers.b
 B∞ = model.background_fields.tracers.b
 
-B = b + B∞
+B = b + B∞ 
 V = v + V∞
 ωy = ∂z(u) - ∂x(w)
 
@@ -258,7 +231,7 @@ using NCDatasets
 
 simulation.output_writers[:fields] = NetCDFWriter(model, outputs;
                                                   filename = joinpath(@__DIR__, "tilted_bottom_boundary_layer.nc"),
-                                                  schedule = TimeInterval(30minutes),
+                                                  schedule = TimeInterval(20minutes),
                                                   overwrite_existing = true)
 
 # Now we just run it!
